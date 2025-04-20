@@ -52,11 +52,11 @@ float Dold = 0.5f, Vold = 0, Pold = 0;    // MPPT memory values
 
 // === SOGI-PLL Initialization ===
 void SPLL_Init(SPLL_1ph_SOGI *pll, float grid_freq, float delta_T) {
-    pll->delta_T = delta_T;
-    pll->fn = grid_freq;
-    pll->fo = 0.0f;
-    pll->theta[0] = pll->theta[1] = 0.0f;
-    pll->sin = 0.0f;
+    pll->delta_T = delta_T;                          //How often are we checking the grid
+    pll->fn = grid_freq;                             //What’s the expected grid frequency
+    pll->fo = 0.0f;                                   // This is our guess of the actual frequency.
+    pll->theta[0] = pll->theta[1] = 0.0f;              //It shows where we are on the sine wave.
+    pll->sin = 0.0f;                                  //align to the grid like rotating a compass needle.
     pll->cos = 1.0f;
 
     // LPF coefficients
@@ -65,39 +65,39 @@ void SPLL_Init(SPLL_1ph_SOGI *pll, float grid_freq, float delta_T) {
     pll->lpf_coeff.A1_lf = -1.0f;
 
     // SOGI filter coefficients
-    float wn = 2 * PI * grid_freq;
+    float wn = 2 * PI * grid_freq;    
     float k = 0.5f;
-    pll->osg_coeff.osg_k = k;
-    pll->osg_coeff.osg_x = 2 * k * wn * delta_T;
-    pll->osg_coeff.osg_y = wn * wn * delta_T * delta_T;
-    float temp = 1.0f / (pll->osg_coeff.osg_x + pll->osg_coeff.osg_y + 4.0f);
-
-    pll->osg_coeff.osg_b0 = pll->osg_coeff.osg_x * temp;
-    pll->osg_coeff.osg_b2 = -pll->osg_coeff.osg_b0;
-    pll->osg_coeff.osg_a1 = 2.0f * (4.0f - pll->osg_coeff.osg_y) * temp;
-    pll->osg_coeff.osg_a2 = (pll->osg_coeff.osg_x - pll->osg_coeff.osg_y - 4.0f) * temp;
-    pll->osg_coeff.osg_qb0 = 0.5f * pll->osg_coeff.osg_y * temp;
-    pll->osg_coeff.osg_qb1 = 2.0f * pll->osg_coeff.osg_qb0;
-    pll->osg_coeff.osg_qb2 = pll->osg_coeff.osg_qb0;
+    pll->osg_coeff.osg_k = k;                                                      //using trapezoidal approxiamation
+    pll->osg_coeff.osg_x = 2 * k * wn * delta_T;                                   // aligned with the grid (called α) ,x = 2 * k * ωn * Ts
+    pll->osg_coeff.osg_y = wn * wn * delta_T * delta_T;                            // 90 degrees shifted ,y = (ωn * Ts)^2
+    float temp = 1.0f / (pll->osg_coeff.osg_x + pll->osg_coeff.osg_y + 4.0f);      //using many times
+    
+    pll->osg_coeff.osg_b0 = pll->osg_coeff.osg_x * temp;                                       // ( x / (x + y + 4) )
+    pll->osg_coeff.osg_b2 = -pll->osg_coeff.osg_b0;                                            // ( -x / (x + y + 4) )
+    pll->osg_coeff.osg_a1 = 2.0f * (4.0f - pll->osg_coeff.osg_y) * temp;                        //(2 * (4 - y)) / (x + y + 4))
+    pll->osg_coeff.osg_a2 = (pll->osg_coeff.osg_x - pll->osg_coeff.osg_y - 4.0f) * temp;         //(x - y - 4) / (x + y + 4)
+    pll->osg_coeff.osg_qb0 = 0.5f * pll->osg_coeff.osg_y * temp;                                 //(k*y) / (x + y + 4)
+    pll->osg_coeff.osg_qb1 = 2.0f * pll->osg_coeff.osg_qb0;                                    //2 * (k*y) / (x + y + 4)
+    pll->osg_coeff.osg_qb2 = pll->osg_coeff.osg_qb0;                                             // (k*y) / (x + y + 4)
 }
 
 // === SOGI-PLL Run Function ===
 void SPLL_Run(SPLL_1ph_SOGI *pll, float vin) {
-    pll->u[2] = pll->u[1]; pll->u[1] = pll->u[0]; pll->u[0] = vin;
-    pll->osg_u[2] = pll->osg_u[1]; pll->osg_u[1] = pll->osg_u[0];
-    pll->osg_u[0] = pll->osg_coeff.osg_b0 * (pll->u[0] - pll->u[2]) + pll->osg_coeff.osg_a1 * pll->osg_u[1] + pll->osg_coeff.osg_a2 * pll->osg_u[2];
-    pll->osg_qu[2] = pll->osg_qu[1]; pll->osg_qu[1] = pll->osg_qu[0];
+    pll->u[2] = pll->u[1]; pll->u[1] = pll->u[0]; pll->u[0] = vin;           // Save the last 3 readings of the voltage
+    pll->osg_u[2] = pll->osg_u[1]; pll->osg_u[1] = pll->osg_u[0];             
+    pll->osg_u[0] = pll->osg_coeff.osg_b0 * (pll->u[0] - pll->u[2]) + pll->osg_coeff.osg_a1 * pll->osg_u[1] + pll->osg_coeff.osg_a2 * pll->osg_u[2];  // generates the in-phase (α) 
+    pll->osg_qu[2] = pll->osg_qu[1]; pll->osg_qu[1] = pll->osg_qu[0];           //computes the quadrature (β) 
     pll->osg_qu[0] = pll->osg_coeff.osg_qb0 * pll->u[0] + pll->osg_coeff.osg_qb1 * pll->u[1] + pll->osg_coeff.osg_qb2 * pll->u[2] + pll->osg_coeff.osg_a1 * pll->osg_qu[1] + pll->osg_coeff.osg_a2 * pll->osg_qu[2];
     pll->u_Q[1] = pll->u_Q[0]; pll->u_D[1] = pll->u_D[0];
-    pll->u_Q[0] = pll->cos * pll->osg_u[0] + pll->sin * pll->osg_qu[0];//PARK TRANSFORMATIONS
-    pll->u_D[0] = pll->cos * pll->osg_qu[0] - pll->sin * pll->osg_u[0];
-    pll->ylf[1] = pll->ylf[0];
+    pll->u_Q[0] = pll->cos * pll->osg_u[0] + pll->sin * pll->osg_qu[0];             //q PARK TRANSFORMATIONS
+    pll->u_D[0] = pll->cos * pll->osg_qu[0] - pll->sin * pll->osg_u[0];             //d aris
+    pll->ylf[1] = pll->ylf[0];                                                      //loop filter(2.1) controller
     pll->ylf[0] = pll->ylf[1] + pll->lpf_coeff.B0_lf * pll->u_Q[0] + pll->lpf_coeff.B1_lf * pll->u_Q[1];
-    pll->fo = pll->fn + pll->ylf[0];
-    pll->theta[1] = pll->theta[0];
-    pll->theta[0] += pll->fo * pll->delta_T * 2.0f * PI;
+    pll->fo = pll->fn + pll->ylf[0];                                                 // f0=fn+loopfilter
+    pll->theta[1] = pll->theta[0];                                                  //accumulates angle θ like a VCO
+    pll->theta[0] += pll->fo * pll->delta_T * 2.0f * PI;                          //θ(t + Δt) = θ(t) + ω(t) * Δt (eulers method) 
     if (pll->theta[0] > 2.0f * PI) pll->theta[0] -= 2.0f * PI;
-    pll->sin = sinf(pll->theta[0]);
+    pll->sin = sinf(pll->theta[0]);                                              // sin/cos for the next Park transformation.
     pll->cos = cosf(pll->theta[0]);
 }
 

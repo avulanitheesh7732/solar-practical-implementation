@@ -68,8 +68,8 @@ void SPLL_Init(SPLL_1ph_SOGI *pll, float grid_freq, float delta_T) {
     float wn = 2 * PI * grid_freq;    
     float k = 0.5f;
     pll->osg_coeff.osg_k = k;                                                      //using trapezoidal approxiamation
-    pll->osg_coeff.osg_x = 2 * k * wn * delta_T;                                   // aligned with the grid (called α) ,x = 2 * k * ωn * Ts
-    pll->osg_coeff.osg_y = wn * wn * delta_T * delta_T;                            // 90 degrees shifted ,y = (ωn * Ts)^2
+    pll->osg_coeff.osg_x = 2 * k * wn * delta_T;                                   // x = 2 * k * ωn * Ts
+    pll->osg_coeff.osg_y = wn * wn * delta_T * delta_T;                            // y = (ωn * Ts)^2
     float temp = 1.0f / (pll->osg_coeff.osg_x + pll->osg_coeff.osg_y + 4.0f);      //using many times
     
     pll->osg_coeff.osg_b0 = pll->osg_coeff.osg_x * temp;                                       // ( x / (x + y + 4) )

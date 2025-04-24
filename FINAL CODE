@@ -95,7 +95,7 @@ void SPLL_Run(SPLL_1ph_SOGI *pll, float vin) {
     pll->ylf[0] = pll->ylf[1] + pll->lpf_coeff.B0_lf * pll->u_Q[0] + pll->lpf_coeff.B1_lf * pll->u_Q[1];
     pll->fo = pll->fn + pll->ylf[0];                                                 // f0=fn+loopfilter
     pll->theta[1] = pll->theta[0];                                                  //accumulates angle θ like a VCO
-    pll->theta[0] += pll->fo * pll->delta_T * 2.0f * PI;                          //θ(t + Δt) = θ(t) + ω(t) * Δt (eulers method) 
+    pll->theta[0] += pll->fo * pll->delta_T * 2.0f * PI;                          //θ(t + Δt) = θ(t) + ω(t) * Δt (First principle of integration) 
     if (pll->theta[0] > 2.0f * PI) pll->theta[0] -= 2.0f * PI;
     pll->sin = sinf(pll->theta[0]);                                              // sin/cos for the next Park transformation.
     pll->cos = cosf(pll->theta[0]);

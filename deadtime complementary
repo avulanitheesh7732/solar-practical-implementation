@@ -1,0 +1,76 @@
+#include <stdint.h>
+#include <stdbool.h>
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/pwm.h"
+#include "driverlib/gpio.h"
+#include "driverlib/pin_map.h"
+
+// Frequencies
+#define BOOST_FREQ     100000
+#define INVERTER_FREQ   60000
+#define DEAD_TIME_CYCLES 10    // 10 PWM clock cycles dead time
+
+int main(void) {
+    // 1. Set system clock to 80MHz
+    SysCtlClockSet(SYSCTL_SYSDIV_2_5 | SYSCTL_USE_PLL |
+                   SYSCTL_OSC_MAIN | SYSCTL_XTAL_16MHZ);
+    uint32_t pwmClock = SysCtlClockGet();
+
+    // 2. Enable peripherals
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);  // Boost
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);  // Inverter Q1/Q2
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);  // Inverter Q3/Q4
+
+    // 3. Configure PWM pins
+    GPIOPinConfigure(GPIO_PB6_M0PWM0); // Boost S1
+    GPIOPinConfigure(GPIO_PB7_M0PWM1); // Boost S2
+    GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_6 | GPIO_PIN_7);
+
+    GPIOPinConfigure(GPIO_PE4_M0PWM4); // Inverter Q1
+    GPIOPinConfigure(GPIO_PE5_M0PWM5); // Inverter Q2
+    GPIOPinTypePWM(GPIO_PORTE_BASE, GPIO_PIN_4 | GPIO_PIN_5);
+
+    GPIOPinConfigure(GPIO_PC4_M0PWM6); // Inverter Q3
+    GPIOPinConfigure(GPIO_PC5_M0PWM7); // Inverter Q4
+    GPIOPinTypePWM(GPIO_PORTC_BASE, GPIO_PIN_4 | GPIO_PIN_5);
+
+    // 4. Set PWM clock
+    SysCtlPWMClockSet(PWM_SYSCLK_DIV_1);
+
+    // 5. Calculate load values
+    uint32_t loadBoost = (pwmClock / BOOST_FREQ) - 1;
+    uint32_t loadInverter = (pwmClock / INVERTER_FREQ) - 1;
+
+    // 6. Fixed dead-time in clock cycles
+    uint32_t deadTime = DEAD_TIME_CYCLES;
+
+    // 7. BOOST: PWM Gen0 (PB6/PB7)
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_0, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, loadBoost);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, loadBoost / 2);
+    PWMDeadBandEnable(PWM0_BASE, PWM_GEN_0, deadTime, deadTime);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_0);
+
+    // 8. INVERTER: PWM Gen2 (PE4/PE5), PWM Gen3 (PC4/PC5)
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_2, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_2, loadInverter);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_4, loadInverter / 2);
+    PWMDeadBandEnable(PWM0_BASE, PWM_GEN_2, deadTime, deadTime);
+    PWMOutputState(PWM0_BASE, PWM_OUT_4_BIT | PWM_OUT_5_BIT, true);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_2);
+
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_3, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, loadInverter);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_6, loadInverter / 2);
+    PWMDeadBandEnable(PWM0_BASE, PWM_GEN_3, deadTime, deadTime);
+    PWMOutputState(PWM0_BASE, PWM_OUT_6_BIT | PWM_OUT_7_BIT, true);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
+
+    while (1) {
+        // Control logic goes here
+    }
+}

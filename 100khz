@@ -1,0 +1,367 @@
+// Adc example project
+// CPU1 ADC module A, CPU2 ADC module C
+// ADC module A pins ΑΘ, Α1
+// ADC module C - pins C3, C5
+// Mock analog signals
+// GPIO22 and GP1052 -rectangular waveforms
+// 50Hz waveforms - triangular waveform (grid)
+// CPU timer 1 - configured to toggle at 10ms interval
+// R-C circuits to these GPIO pins -2.2kOhm and C = 2 2.2microf and 3.3microf
+// Trigger
+// ADC module A will be triggered by ePWM1
+// ADC module C will be triggered by ePWM4
+
+
+#include "F28x_Project.h"
+
+#define ADC_BITRESOLUTION_12BIT 0
+#define ADC_BITRESOLUTION_16BIT 1
+
+//global variables
+double volt, curr;
+
+#define AVG_SAMPLES 4   // You can tune this: 16, 32, 64, 200...  //to know how much time it is taking to implement we can do like intialaze gpio at start 1
+//and at final make it zero then measure that in scope we can know the how much time it is taking
+
+uint32_t volt_sum = 0, curr_sum = 0;
+uint16_t sample_count = 0;
+double volt_avg = 0.0, curr_avg = 0.0;   // Averaged results
+
+// PI Controller parameters
+#define KP  1.0    // Proportional gain (tune as needed)
+#define KI  0.1    // Integral gain (tune as needed)
+#define TS  0.00001 // 10us sampling interval for 10kHz (in seconds) i am doing  4 samples for tsw/4=2.5microsec but pi runs after 4 samples hence 100khz=
+
+// Controller state
+double pi_u = 0.0, pi_u_prev = 0.0;
+double pi_e = 0.0, pi_e_prev = 0.0;
+
+
+
+
+
+// Timer1 ISR
+__interrupt void timer1_isr(void)
+{
+    // Toggle GPIO 22 and 52
+    GpioDataRegs.GPATOGGLE.bit.GPIO22 = 1;
+    GpioDataRegs.GPBTOGGLE.bit.GPIO52 = 1;
+
+    // Clear interrupt flag
+    CpuTimer1Regs.TCR.bit.TIF = 1;
+
+
+}
+__interrupt void adcal_isr(void) {
+    uint16_t volt_raw, curr_raw;
+
+    // Read the results from the ADCRESULT Regs
+    volt_raw = AdcaResultRegs.ADCRESULT0;    // SOC1 (A0)
+    curr_raw = AdcaResultRegs.ADCRESULT1;      // SOC2 (A1)
+
+    // Transform the unisgned 12-bit numbers to a floating point value
+    //0 to 3.3V 12 bit number 0 to 4095
+    volt = (volt_raw * 3.3)/4096.0;
+    curr = (curr_raw * 3.3)/4096.0;
+
+    // ---------------- Averaging logic ----------------
+     volt_sum += volt_raw;
+     curr_sum += curr_raw;
+     sample_count++;
+
+     if(sample_count >= AVG_SAMPLES) {
+         // Compute averages (in Volts)
+         volt_avg = (volt_sum / (double)AVG_SAMPLES) * (3.3 / 4096.0);
+         curr_avg = (curr_sum / (double)AVG_SAMPLES) * (3.3 / 4096.0);
+
+         
+         // Example: PI control for voltage
+             double ref = 1; // Example reference for voltage (Setpoint), change as needed
+             pi_e = ref - volt_avg;
+
+             // Tustin method coefficients
+             double A = KP + KI * (TS / 2.0);
+             double B = -KP + KI * (TS / 2.0);
+
+             // PI Controller Output Calculation (Tustin method)
+             pi_u = pi_u_prev + (A * pi_e) + (B * pi_e_prev);
+
+             // Clamp output if needed (optional)
+             if(pi_u > 0.9) pi_u = 0.9;
+             if(pi_u < 0.1) pi_u = 0.1;
+
+             // Save states for next iteration
+             pi_u_prev = pi_u;
+             pi_e_prev = pi_e;
+
+             // Assign PI output to PWM or use as needed
+
+             // Convert PI output (0–1) → CMPA value
+             EPwm3Regs.CMPA.bit.CMPA = (uint16_t)(pi_u * (EPwm3Regs.TBPRD));
+
+         
+         // Reset accumulators
+         volt_sum = 0;
+         curr_sum = 0;
+         sample_count = 0;
+     }
+     // -------------------------------------------------
+    // Post processing gain of the sensor, offsets produced by conditioning circuits
+
+    // Execute our control algorithm
+
+    
+    // Result will be a duty ratio and will be in CMPA
+
+    // Clear the flag in the ADCINT register
+    AdcaRegs.ADCINTFLGCLR.bit.ADCINT1 = 1;
+    // Clear the PIEACK bit
+    PieCtrlRegs.PIEACK.bit.ACK1 = 1;
+}
+
+// Main
+void main(void)
+{
+    InitSysCtrl();          // Initialize system clock, PLL, WD
+    DINT;
+    InitPieCtrl();          // Initialize PIE
+    IER = 0x0000;           // Disable CPU interrupts
+    IFR = 0x0000;
+    InitPieVectTable();     // Populate PIE vector table with default ISRs
+
+
+    //eppwmclck->modules to cpu-> enable clock to modules->reset epm modules->timer1as interrupt ->make the epwm configuration and dead band->
+
+    // Set frequency of ePWM clock (<100 Mhz)
+    EALLOW;
+    ClkCfgRegs.PERCLKDIVSEL.bit.EPWMCLKDIV = 1;
+    EDIS;
+
+    // Assign ePWM modules to CPUs
+    EALLOW;
+    DevCfgRegs.CPUSEL0.bit.EPWM1 = 0;
+    DevCfgRegs.CPUSEL0.bit.EPWM3 = 0;
+    EDIS;
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.CPUTIMER1 = 1;   // Enable clock to Timer1
+    EDIS;
+
+    // // Assign ADC modules to CPUs
+    EALLOW;
+    DevCfgRegs.CPUSEL11.bit.ADC_A = 0;  //0-cpu1
+    DevCfgRegs.CPUSEL11.bit.ADC_C = 1;   //1-cpu2
+
+    EDIS;
+
+    // Enable the clocks to ePWM modules 1
+    EALLOW;
+    CpuSysRegs.PCLKCR2.bit.EPWM1 = 1;
+    EDIS;
+
+    EALLOW;
+    CpuSysRegs.PCLKCR2.bit.EPWM3 = 1;   // Enable clock to EPWM3
+    EDIS;
+
+
+    // Enable the clocks to ADC modules A
+    EALLOW;
+    CpuSysRegs.PCLKCR13.bit.ADC_A = 1;
+    EDIS;
+
+    // Stop the timer counters for ePWM 1
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC = 0;
+    EDIS;
+
+    EALLOW;
+
+    PieVectTable.TIMER1_INT = &timer1_isr;  // Hook ISR
+    EDIS;
+    InitCpuTimers();
+    ConfigCpuTimer(&CpuTimer1, 200, 2.4);
+    CpuTimer1Regs.TCR.bit.TIE = 1;
+    CpuTimer1Regs.TCR.bit.TSS = 0;
+
+
+    // Configure the ePWM modules 1 and 2
+    // Time base sub-module
+    // 100 MHz. TBCLK = 100 / (2 * 1) = 50 Mhz
+    EPwm1Regs.TBCTL.bit.FREE_SOFT = 2;
+    EPwm1Regs.TBCTL.bit.CLKDIV = 0;
+    EPwm1Regs.TBCTL.bit.HSPCLKDIV = 1;
+    EPwm1Regs.TBCTL.bit.PRDLD = 0;
+    EPwm1Regs.TBCTL.bit.CTRMODE = 0; // up count mode
+
+
+    //epwm3 for boost
+    // ----------- ePWM3 Setup for Boost PWM -------------
+    EPwm3Regs.TBCTL.bit.FREE_SOFT = 2;
+    EPwm3Regs.TBCTL.bit.CLKDIV = 0;
+    EPwm3Regs.TBCTL.bit.HSPCLKDIV = 1;
+    EPwm3Regs.TBCTL.bit.PRDLD = 0;
+    EPwm3Regs.TBCTL.bit.CTRMODE = 0;          // up-count mode
+
+    // Period register //each clock (1/50mhz)*x=1/10khz
+
+    EPwm3Regs.TBPRD = 500 - 1;  //100khz epwm3 for boost
+    EPwm1Regs.TBPRD = 125 - 1; //  400kHz sawtooth
+
+    // Counter-compare sub-module
+    EPwm1Regs.CMPCTL.bit.SHDWAMODE = 0;
+    EPwm1Regs.CMPCTL.bit.LOADAMODE = 0;
+
+    EPwm1Regs.CMPA.bit.CMPA = 1999; //0.4duty
+
+    //epwm3 for boost
+    // Counter compare
+   EPwm3Regs.CMPCTL.bit.SHDWAMODE = 0;
+   EPwm3Regs.CMPCTL.bit.LOADAMODE = 0;
+    EPwm3Regs.CMPA.bit.CMPA = 0;              // start with 0% duty
+
+    // Action qualifier sub-module
+    // ePWM1 - A output to be fed to the upper device of a leg
+    // B output to be fed to the lower device of a leg
+    // TBCTR = 0, A will be high, B will be low (ZRO - AQCTLA/B)
+    // TBCTR = CMPA. A will be low and B will be high (CAU - AQCTLA/B)
+    EPwm1Regs.AQCTLA.bit.ZRO = 2; // due to POLSEL in DBCTL
+    EPwm1Regs.AQCTLB.bit.ZRO = 2; // due to POLSEL in DBCTL
+    EPwm1Regs.AQCTLA.bit.CAU = 1;
+    EPwm1Regs.AQCTLB.bit.CAU = 1;
+
+
+    //epwm3 for boost
+    // Action qualifier: toggle high at ZRO, low at CMPA
+    EPwm3Regs.AQCTLA.bit.ZRO = 2;             // set on Zero
+    EPwm3Regs.AQCTLA.bit.CAU = 1;             // clear on CMPA
+
+
+    // Dead-band sub-module
+    // DBCTL register
+    EPwm1Regs.DBCTL.bit.IN_MODE = 1;           // A - rising edge, B - falling edge
+    EPwm1Regs.DBCTL.bit.POLSEL = 2;           // falling edge (B) is inverted - change AQCTLB
+    EPwm1Regs.DBCTL.bit.OUT_MODE = 3;           // both delay generators are enabled
+
+    // DBRED/DBFED registers
+    // 2 microsecond delay
+    EPwm1Regs.DBRED.all = 25;  //1/50mhz=0.02usec red=0.5u(delay)/0.02u(clockfrequency)=25
+    EPwm1Regs.DBFED.all = 25;
+
+
+    //ADc cpu select11->clock to adc->power up module->prescale the clock and resolution
+
+
+    // Configure the Event trigger sub-module
+    EPwm1Regs.ETSEL.bit.SOCAEN = 1;
+    EPwm1Regs.ETSEL.bit.SOCASEL = 1; // when TBCTR = 0
+    EPwm1Regs.ETPS.bit.SOCAPRD = 1; // every PWM cycle  SOCAPRD and SOCBPRD decide when the SOC signals should be generated. like skipping events
+
+    // Configure the ADC MODULE
+    //DIVIDE THE CLOCK SO THE ADCCLCK <=50MHZ
+    //POWERUP THE ADC MODULE
+    EALLOW;
+    AdcaRegs.ADCCTL2.bit.PRESCALE = 6;  //200 divide 4 = 50mhz prescale adc=(5,50mhz)
+    AdcaRegs.ADCCTL1.bit.ADCPWDNZ = 1; //comparing and quantization ADCPWDNZ to 1 will power up the analog circuity and make the module ready for use.
+
+
+    //tconv=(acqps+1)Tadcclk+12.5*Tadcclk = tcov=17*20nanosec+12.5*20nanosec=590nano sec my isr is 400khz =2.5microec that means 590ns is much shorter then
+    //isr interval
+    
+    
+    //set the mode and resolution of the adc module library function
+    AdcSetMode(ADC_ADCA, ADC_BITRESOLUTION_12BIT, ADC_SIGNALMODE_SINGLE);
+
+    // Configure the channels
+    // Two channels - SOC0 and SOC1
+    AdcaRegs.ADCSOC0CTL.bit.CHSEL = 0; // A0 selected
+    AdcaRegs.ADCSOC0CTL.bit.TRIGSEL = 5; //EPWM1 SOCA
+    AdcaRegs.ADCSOC0CTL.bit.ACQPS = 16; //0.01usec // 500ns S&H  this will stor 2^9-1=511bits we should maintain this value that allows
+    //suffiecient time to execute control algorithm also for suppose 1/10^4=100usec lets say i will give 1usec that all my adcs done that
+    //means 500nano sec acqs for 1 sample thatmeans 500nsec*system clkfrequency =500*10^-9*200*10^6=100-1=99
+//total 10micro sec ;1/2*e6=0.5usec is adc period  that means 0.01micro second for one sample =0.01*10^-6*200*10^6=40-1=1(20 for one sample is 0.1microsec
+    AdcaRegs.ADCSOC1CTL.bit.CHSEL = 1; // A1 selected
+    AdcaRegs.ADCSOC1CTL.bit.TRIGSEL = 5; //EPWM1 SOCA
+    AdcaRegs.ADCSOC1CTL.bit.ACQPS = 16; // 500ns S&H
+
+
+    // Configure the interrupt
+    // Configure the interrupt
+    // SOC from ePWM1 SOCA -AO (SOCO) & then A1 (SOC1)
+
+    // A0 is sampled, after that it is converted.
+    // While A0 is converted, A1 is sampled.
+    // After A0 is converted, A1 is then converted.
+    // After every conversion, there is an EoC.
+
+    // EOC0 & then EOC1
+    // ADCINT1 can be after EOC1
+    AdcaRegs.ADCINTSEL1N2.bit.INT1E = 1;
+    AdcaRegs.ADCINTSEL1N2.bit.INT1CONT = 0;   //Not continuous mode
+    AdcaRegs.ADCINTSEL1N2.bit.INT1SEL = 1;  //INTXE bit if set to 1 enables ADCINTX.
+                                             // INTXCONT bit makes that particular interrupt continuous if set to 1.
+                                           //  In discontinuous mode, we must manually clear an interrupt flag for further interrupts to be generated.
+                              // In continuous mode, interrupts will continue to be generated even if the interrupt flag is not cleared manually in the ISB
+
+    EDIS;
+
+    EALLOW;
+    PieVectTable.ADCA1_INT = &adcal_isr;
+    EDIS;
+
+    // Configure the PIE module
+    // INT1.1 ADCAINT1 -
+    PieCtrlRegs.PIEIER1.bit.INTx1 = 1;
+
+    // Configure Timer1
+    //CpuTimer1Regs.TCR.bit.TSS = 1;          // Stop Timer
+    //CpuTimer1Regs.PRD.all = 2000000 - 1;    // Period (assuming 200 MHz -> 10ms)
+   // CpuTimer1Regs.TPR.all = 0;
+    //CpuTimer1Regs.TCR.bit.FREE = 1;
+   // CpuTimer1Regs.TCR.bit.TIE = 1;
+   // CpuTimer1Regs.TCR.bit.TRB = 1;          // Reload
+
+    // Enable interrupt in PIE and CPU
+    IER |= M_INT13;                         // Enable INT13 (Timer1)
+    IER |= (uint16_t) 0x1U;                //enable for group1
+    EINT;                                   // Enable global interrupts
+
+    // Configure GPIO 22 and 52 as output
+    EALLOW;
+    //epwm1&4
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO0 = 0;
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO1 = 0;
+    GpioCtrlRegs.GPAMUX1.bit.GPIO0 = 1;   //epwm1 for soc for adc
+    GpioCtrlRegs.GPAMUX1.bit.GPIO1 = 1;
+
+
+
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO4 = 0;
+    GpioCtrlRegs.GPAMUX1.bit.GPIO4  = 1;     // EPWM3A on GPIO
+    GpioCtrlRegs.GPADIR.bit.GPIO4   = 1;
+
+
+
+    GpioCtrlRegs.GPAGMUX2.bit.GPIO22 = 0;
+    GpioCtrlRegs.GPAMUX2.bit.GPIO22  = 0;  //timer
+    GpioCtrlRegs.GPADIR.bit.GPIO22   = 1;
+
+    GpioCtrlRegs.GPBGMUX2.bit.GPIO52 = 0;
+    GpioCtrlRegs.GPBMUX2.bit.GPIO52  = 0; //timer
+    GpioCtrlRegs.GPBDIR.bit.GPIO52   = 1;
+    EDIS;
+
+
+
+    // Start the timer counters for ePWM 1
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC = 1;
+    EDIS;
+
+    while(1) { }
+}
+//averaging my adc frequency is 10khz That means 10,000 samples every second.for 50 Hz = 1 / 50 = 20 ms.,,20 ms × 10,000 samples/s = 200 samples
+//If your goal = find DC average (like RMS meter or power measurement) → use ~200 samples (1 cycle).
+//If your goal = control (like current loop or voltage loop) → keep it short (8–32 samples).
+//If your goal = fast event detection (like protection trip) → don’t average, or just average 2–4 samples.
+
+//12bit mode

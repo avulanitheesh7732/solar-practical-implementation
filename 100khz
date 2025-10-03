@@ -28,8 +28,8 @@ uint16_t sample_count = 0;
 double volt_avg = 0.0, curr_avg = 0.0;   // Averaged results
 
 // PI Controller parameters
-#define KP  1.0    // Proportional gain (tune as needed)
-#define KI  0.1    // Integral gain (tune as needed)
+#define KP  0.0179    // Proportional gain (tune as needed)
+#define KI  949    // Integral gain (tune as needed)
 #define TS  0.00001 // 10us sampling interval for 10kHz (in seconds) i am doing  4 samples for tsw/4=2.5microsec but pi runs after 4 samples hence 100khz=
 
 // Controller state

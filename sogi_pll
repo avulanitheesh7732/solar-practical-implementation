@@ -1,0 +1,215 @@
+#include "Peripheral_Setup.h"
+#include "sogi.h"
+#include "filter.h"
+#include "F28x_Project.h"
+#include "math.h"
+
+#define GRID_FREQ 50.0
+#define SAMPLING_FREQ 36000.0
+#define TS (1.0/SAMPLING_FREQ)
+#define PI 3.14159265358979323846
+#define TWO_PI (2.0*PI)
+
+
+__interrupt void isr_cpu_timer0(void);
+__interrupt void isr_adc(void);
+
+// PLL and measurement variables
+float v_bus = 0;        // DC bus voltage (for protection)
+float v_grid = 0;       // Grid voltage
+int offset_v_grid = -30; // ADC offset for grid voltage
+
+// PLL structure
+SPLL_SOGI v_grid_pll;
+
+Uint16 AdcaResult0;
+Uint16 AdcMaxValue;
+Uint16 DAC1 = 0;
+Uint16 DAC2 = 0;
+Uint16 DAC3 = 0;
+Uint16 DAC4 = 0;
+
+float *padc1 = &v_grid;
+float *padc2 = &v_grid_pll.u_Q[0];
+float *padc3 = &v_grid_pll.theta[0];
+unsigned int index = 0;
+unsigned char div_ind = 0;
+
+int main(void){
+    InitSysCtrl();
+
+    InitGpio();
+    ConfigureGpioForDacs();
+    InitDacs();
+    InitEPwmGpio();
+     DINT;
+    InitPieCtrl();
+    IER = 0x0000;
+    IFR = 0x0000;
+    InitPieVectTable();
+
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.CPUTIMER0 = 1;         // Enable timer clock
+    PieVectTable.TIMER0_INT = &isr_cpu_timer0;   // Redirect function to interruption
+    PieVectTable.ADCA1_INT = &isr_adc;          // Redirect function to interruption
+    EDIS;
+
+    PieCtrlRegs.PIEIER1.bit.INTx7 = 1;      // Enable PieVector to Timer 0 interrupt
+    PieCtrlRegs.PIEIER1.bit.INTx1 = 1;      // Enable PieVector to ADCA1 interrupt
+    IER |= (M_INT1);                        // Enable lines of interrupt
+
+    InitCpuTimers();
+    ConfigCpuTimer(&CpuTimer0, 200, 1000000);   // Configure cpu timer0 with 200MHz and 1s
+    CpuTimer0Regs.TCR.all = 0x4001;
+
+    // PLL INITIALIZATION
+    SOGI_init(GRID_FREQ, TS, &v_grid_pll);                       // Init PLL
+    SOGI_coeff_update(TS, TWO_PI*GRID_FREQ, 0.7, &v_grid_pll);    // Configure PLL 314(50)//376 is 2pigridfrequency
+
+    InitGpio_2();                             // Configure GPIOs
+    InitEPwm1();
+    SetupADC();
+
+    EINT;
+    ERTM;
+    GpioDataRegs.GPADAT.bit.GPIO31 = 0;     // Turn off LED
+
+    while(1){
+        // Main loop - PLL runs automatically in ADC ISR
+        // Add any monitoring code here if needed
+    }
+}
+
+void InitGpio_2()
+{
+    EALLOW;
+    GpioCtrlRegs.GPAGMUX1.bit.GPIO2 = 0;
+    GpioCtrlRegs.GPAMUX1.bit.GPIO2 = 0;    //epwm2a
+    GpioCtrlRegs.GPADIR.bit.GPIO2 = 1;
+    GpioDataRegs.GPACLEAR.bit.GPIO2 = 1;
+    EDIS;
+}
+
+void InitEPwm1()
+{
+    EALLOW;
+    CpuSysRegs.PCLKCR0.bit.TBCLKSYNC = 0;
+    // Enable the clocks to ePWM modules 1
+    CpuSysRegs.PCLKCR2.bit.EPWM1 = 1;
+    ClkCfgRegs.PERCLKDIVSEL.bit.EPWMCLKDIV = 1;     // x1 = /2 of PLLSYSLCK (default on reset)
+    EDIS;
+
+
+    EPwm1Regs.TBPRD = 2778;             // Set timer period //36khz(100mhz/36khz)
+    EPwm1Regs.CMPA.bit.CMPA = EPwm1Regs.TBPRD >> 1;
+
+    EPwm1Regs.TBPHS.bit.TBPHS = 0;                  // Phase is 0
+    EPwm1Regs.TBCTL.bit.SYNCOSEL = 1;
+    EPwm1Regs.TBCTR = 0x0000;                       // Clear counter
+    EPwm1Regs.TBCTL.bit.CTRMODE = 2;   //updown count mode
+    EPwm1Regs.TBCTL.bit.HSPCLKDIV = 0;   //1
+    EPwm1Regs.TBCTL.bit.CLKDIV = 0;      //1  100mhz/1*1=epwmclck
+
+    EPwm1Regs.CMPCTL.bit.SHDWAMODE = 0;     // Load registers every ZERO
+    EPwm1Regs.CMPCTL.bit.LOADAMODE = 2;     // Load on either CTR = Zero or CTR = PRD
+    EPwm1Regs.CMPCTL.bit.SHDWBMODE = 0;     // Load registers every ZERO
+    EPwm1Regs.CMPCTL.bit.LOADBMODE = 2;
+
+
+
+    EPwm1Regs.AQCTLA.bit.PRD = 0;
+    EPwm1Regs.AQCTLA.bit.ZRO = 0;
+   EPwm1Regs.AQCTLA.bit.CAU = 1;            // set actions for EPWM1A
+   EPwm1Regs.AQCTLA.bit.CAD = 2;
+
+   EPwm1Regs.DBCTL.bit.POLSEL = 2;       // Active Hi complementary
+   EPwm1Regs.DBCTL.bit.OUT_MODE = 3;  // enable Dead-band module
+   EPwm1Regs.DBFED.bit.DBFED = 10;                 // FED = 20 TBCLKs
+   EPwm1Regs.DBRED.bit.DBRED = 10;                 // RED = 20 TBCLKs
+
+    EPwm1Regs.ETSEL.bit.SOCAEN = 1;
+    EPwm1Regs.ETSEL.bit.SOCASEL = 3;   // Enable event time-base counter equal to zero or period (TBCTR
+    EPwm1Regs.ETPS.bit.SOCAPRD = 1;
+}
+void SetupADC(void){
+    Uint16 acqps;
+   // determine minimum acquisition window (in SYSCLKS) based on resolution
+      if(ADC_RESOLUTION_12BIT == AdcaRegs.ADCCTL2.bit.RESOLUTION)
+          acqps = 14;                             // 75ns
+      else                                        // resolution is 16-bit
+          acqps = 63;                             // 320ns
+
+   EALLOW;
+   CpuSysRegs.PCLKCR13.bit.ADC_A = 1;
+   AdcaRegs.ADCCTL2.bit.PRESCALE = 6;          // set ADCCLK divider to /4
+   AdcSetMode(ADC_ADCA, ADC_RESOLUTION_12BIT, ADC_SIGNALMODE_SINGLE);
+   AdcaRegs.ADCCTL1.bit.ADCPWDNZ = 1;          // power up the ADC
+   DELAY_US(1000);                             // delay for 1ms to allow ADC time to power up
+
+   AdcaRegs.ADCSOC0CTL.bit.CHSEL = 0;         //SOC0 will convert pin ADCINA0 (30) Va
+   AdcaRegs.ADCSOC0CTL.bit.ACQPS = acqps;
+   AdcaRegs.ADCSOC0CTL.bit.TRIGSEL = 5;        //epwm1 soca
+   EDIS;
+}
+
+
+void ConfigureGpioForDacs(void)
+{
+    EALLOW;
+    GpioCtrlRegs.GPAMUX1.bit.GPIO12 = 3;
+    GpioCtrlRegs.GPAMUX1.bit.GPIO13 = 3;
+    EDIS;
+}
+
+
+void InitDacs(void)
+{
+    EALLOW;
+    DacaRegs.DACCTL.bit.DACREFSEL = 1;
+    DacbRegs.DACCTL.bit.DACREFSEL = 1;
+    DacaRegs.DACCTL.bit.LOADMODE = 0;
+    DacbRegs.DACCTL.bit.LOADMODE = 0;
+    DacaRegs.DACOUTEN.bit.DACOUTEN = 1;
+    DacbRegs.DACOUTEN.bit.DACOUTEN = 1;
+    DacaRegs.DACVALS.bit.DACVALS = DAC1;
+    DacbRegs.DACVALS.bit.DACVALS = DAC3;
+    DELAY_US(10);
+    EDIS;
+}
+
+
+
+
+__interrupt void isr_cpu_timer0(void){
+    GpioDataRegs.GPATOGGLE.bit.GPIO31 = 1;  // Blink LED
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
+__interrupt void isr_adc(void){
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP3;
+    // Read grid voltage (single-ended from ADCINA3)
+    v_grid = (3.3/4096)*((int)AdcaResultRegs.ADCRESULT0);   //we need multiply with 3.3v ->2^12 we should take sensor gain also
+
+
+    // PLL PROCESSING
+    v_grid_pll.u[0] = v_grid - 1;   // Scale to per-unit
+    SPLL_SOGI_CALC(&v_grid_pll);
+
+    DAC1 = (Uint16)(((osg_u[0] + 1) * 4095.0f) / 3.3f);
+    DAC2 = (Uint16)(((osg_qu[0] + 1) * 4095.0f) / 3.3f);
+    DAC3 = ((theta[0])/(2*M_PI))*2482;
+    DAC4 = (Uint16)(( v_grid / 3.3) * 4095.0);
+
+    if (DAC1 > 4095) DAC1 = 4095;
+    if (DAC2 > 4095) DAC2 = 4095;
+
+    DacaRegs.DACVALS.bit.DACVALS = DAC1;
+    DacbRegs.DACVALS.bit.DACVALS = DAC3;
+
+    EPwm1Regs.ETCLR.bit.INT = 1;
+
+
+    AdcaRegs.ADCINTFLGCLR.bit.ADCINT1 = 1;
+    PieCtrlRegs.PIEACK.all = PIEACK_GROUP1;
+}
+
